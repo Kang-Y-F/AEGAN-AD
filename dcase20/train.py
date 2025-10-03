@@ -158,6 +158,20 @@ def train(netD, netG, tr_ld, te_ld, optimD, optimG, logger, device, best_aver=No
             logger.info('{}: [AUC: {:.4f}] [pAUC: {:.4f}] [aver: {:.4f}] [metric: {}] '
                         .format(mt, mt_aver[j, 0], mt_aver[j, 1], mt_aver[j, 2], metric[mt]))
 
+        # ====== 定期保存 "last" checkpoint（可选） ======
+        if save_every > 0 and ((i + 1) % save_every == 0):
+            root, ext = os.path.splitext(param['model_pth'])
+            last_path = f"{root}_last{ext}"
+            torch.save({'netD': netD.state_dict(),
+                        'netG': netG.state_dict(),
+                        'best_aver': best_aver}, last_path)
+            logger.info(f"[checkpoint] saved last to {last_path}")
+
+        # ====== 早停 ======
+        if patience > 0 and wait >= patience:
+            logger.info(f"[early stop] no improvement for {patience} evals; stop at epoch {i}")
+            break
+
     torch.save({'netD': bestD, 'netG': bestG, 'best_aver': best_aver}, param['model_pth'])
 
 
@@ -258,7 +272,8 @@ def main(logger):
     netD = Discriminator(param)
     netG = AEDC(param)
     if param['resume']:
-        pth_file = torch.load(utils.get_model_pth(param), map_location=torch.device('cpu'))
+        # pth_file = torch.load(utils.get_model_pth(param), map_location=torch.device('cpu'))
+        pth_file = torch.load(utils.get_model_pth(param), map_location=torch.device('cpu'), weights_only=False)
         netD_dict, netG_dict, best_aver = pth_file['netD'], pth_file['netG'], pth_file['best_aver']
         netD.load_state_dict(netD_dict)
         netG.load_state_dict(netG_dict)
@@ -268,6 +283,32 @@ def main(logger):
         best_aver = None
     netD.to(device)
     netG.to(device)
+   
+    # 打印关键flag，便于自查
+    logger.info(f"[flags] resume={param['resume']} eval_only={param.get('eval_only', False)} "
+                f"epochs={param['train']['epoch']} ft_lr_scale={param['train'].get('ft_lr_scale',1.0)} "
+                f"patience={param['train'].get('patience',0)} save_every={param['train'].get('save_every',0)}")
+
+        # ====== ★ 在这里加 eval-only 分支 ★ ======
+    if param.get('eval_only', False):
+        logger.info("EVAL-ONLY mode: skipping training...")
+        train_embs = get_d_aver_emb(netD, tr_ld.dataset, device)
+        mt_aver, metric = np.zeros((len(param['mt']['test']), 3)), {}
+        for j, mt in enumerate(te_ld.keys()):
+            mt_aver[j], metric[mt] = test(netD, netG, te_ld[mt], train_embs, logger, device)
+        logger.info('EVAL-ONLY aver_all_mt={:.4f}'.format(np.mean(mt_aver[:, 2])))
+        return  # 直接返回，不进入训练
+
+    # ========= 微调学习率（仅当 resume 时生效） =========
+    lr_scale = param['train'].get('ft_lr_scale', 1.0) if param['resume'] else 1.0
+    lrD = param['train']['lrD'] * lr_scale
+    lrG = param['train']['lrG'] * lr_scale
+    
+    # 如果不是resume，保持你的初始化逻辑
+    if not param['resume']:
+        netD.apply(utils.weights_init)
+        netG.apply(utils.weights_init)
+        
     optimD = torch.optim.Adam(netD.parameters(),
                               lr=param['train']['lrD'],
                               betas=(param['train']['beta1'], 0.999))
@@ -286,13 +327,39 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--card_id', type=int, choices=list(range(card_num)), default=6)
     parser.add_argument('--resume', action='store_true', default=False)
     parser.add_argument('--seed', type=int, default=783)
+    parser.add_argument('--eval_only', action='store_true', default=False)
+    parser.add_argument('--epochs', type=int, default=None, help='finetune epochs; override config')
+    parser.add_argument('--ft_lr_scale', type=float, default=1.0, help='scale LR when resume (e.g., 0.5)')
+    parser.add_argument('--patience', type=int, default=0, help='early stop patience (0=disable)')
+    parser.add_argument('--save_every', type=int, default=0, help='save a last checkpoint every N epochs (0=disable)')
+    parser.add_argument('--tag', type=str, default='', help='suffix for model filename to avoid overwrite, e.g., ft1')
+
     opt = parser.parse_args()
 
     utils.set_seed(opt.seed)
     param['card_id'] = opt.card_id
-    param['model_pth'] = utils.get_model_pth(param)
     param['resume'] = opt.resume
     param['mt'] = {'train': [opt.mt], 'test': [opt.mt]}
+    param['eval_only'] = opt.eval_only  
+
+    # ============ 覆盖 epoch（可选：用于微调只跑少量轮次） ============
+    if opt.epochs is not None:
+        # 覆盖 config.yaml 里的训练轮数
+        param.setdefault('train', {})
+        param['train']['epoch'] = opt.epochs
+    
+    # ============ 微调相关（学习率缩放 / 早停 / 定期保存） ============
+    param['train']['ft_lr_scale'] = opt.ft_lr_scale   # 仅 resume 时在 main() 里生效
+    param['train']['patience']    = opt.patience      # 早停，0 表示关闭
+    param['train']['save_every']  = opt.save_every    # 每 N 个 epoch 额外存一次 last，0 表示关闭
+    
+    param['model_pth'] = utils.get_model_pth(param)
+    if opt.tag:
+        # 给文件名加后缀，例如 *_ft1.pth
+        root, ext = os.path.splitext(param['model_pth'])
+        param['model_pth'] = f"{root}_{opt.tag}{ext}"
+
+    
     for dir in [param['model_dir'], param['spec_dir'], param['log_dir']]:
         os.makedirs(dir, exist_ok=True)
 

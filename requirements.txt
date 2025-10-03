@@ -1,8 +1,7 @@
 tqdm
 scipy
 numpy
-pytorch
+torch
 scikit-learn
 argparse
 librosa
-logging
