@@ -6,7 +6,9 @@ import datetime
 import random
 import torch
 from tqdm import tqdm
-
+import json
+from torch.utils.data import DataLoader
+import csv
 
 def get_clip_addr(clip_dir, ext='wav'):
     clip_addr = []
@@ -176,3 +178,97 @@ def get_logger(param):
     logger.addHandler(fh)
     logger.info('Train starts at: {}'.format(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
     return logger
+
+def save_checkpoint(path, netD, netG, netU, optimD, optimG, optimU,
+                    epoch, step_in_epoch, global_step, best_aver, current_bs,
+                    scaler_state=None):
+    """
+    保存完整的训练状态，可用于精确续跑
+    """
+    ckpt = {
+        'netD': netD.state_dict(),
+        'netG': netG.state_dict(),
+        'netU': netU.state_dict(),
+        'optimD': optimD.state_dict(),
+        'optimG': optimG.state_dict(),
+        'optimU': optimU.state_dict(),
+        'epoch': epoch,
+        'step_in_epoch': step_in_epoch,
+        'global_step': global_step,
+        'best_aver': best_aver,
+        'current_bs': current_bs,
+        'rng_state': torch.get_rng_state(),
+        'cuda_rng_state': torch.cuda.get_rng_state_all(),
+        'scaler': scaler_state,
+    }
+    torch.save(ckpt, path)
+    print(f"[checkpoint] saved to {path}")
+
+def try_load_checkpoint(resume_flag, model_pth):
+    """
+    resume_flag=True 时，自动查找 *_last.pth 或主模型文件。
+    若存在则加载并返回 (ckpt, path)，否则返回 (None, None)
+    """
+    if not resume_flag:
+        return None, None
+    root, ext = os.path.splitext(model_pth)
+    last_path = f"{root}_last{ext}"
+    resume_path = last_path if os.path.exists(last_path) else (
+        model_pth if os.path.exists(model_pth) else None
+    )
+    if resume_path is None:
+        print("[resume] no checkpoint found, start from scratch")
+        return None, None
+    ckpt = torch.load(resume_path, map_location='cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"[resume] loaded from {resume_path}")
+    return ckpt, resume_path
+
+
+def append_metrics(csv_path, fieldnames, row_dict):
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    file_exists = os.path.exists(csv_path)
+    with open(csv_path, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row_dict)
+
+def dump_run_state(json_path, state_dict):
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+    with open(json_path, 'w') as f:
+        json.dump(state_dict, f, indent=2, ensure_ascii=False)
+
+def build_train_loader(train_dataset, bs, logger=None):
+    """
+    构建一个 DataLoader。支持动态 batch size。
+    参数:
+        train_dataset: 训练集 (Dataset)
+        bs: 当前批量大小
+        logger: 可选日志对象，用于打印当前状态
+    返回:
+        DataLoader 实例
+    """
+    try:
+        loader = DataLoader(
+            train_dataset,
+            batch_size=bs,
+            shuffle=True,
+            drop_last=True,
+            num_workers=8,
+            pin_memory=True,
+            persistent_workers=True,   # 减少 worker 重启开销
+            prefetch_factor=2          # 提前加载 batch，提升吞吐
+        )
+        if logger:
+            logger.info(f"[DataLoader] build success: batch_size={bs}, num_workers=4")
+        else:
+            print(f"[DataLoader] build success: batch_size={bs}, num_workers=4")
+        return loader
+
+    except Exception as e:
+        # 若 DataLoader 初始化失败（如 OOM），打印警告并返回 None
+        if logger:
+            logger.warning(f"[DataLoader] failed to build for bs={bs}: {e}")
+        else:
+            print(f"[DataLoader] failed to build for bs={bs}: {e}")
+        return None

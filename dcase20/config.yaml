@@ -26,16 +26,44 @@ net:
   isize: 128
 
 train:
+  # === Optim ===
   lrD: 0.0002
   lrG: 0.0002
+  lrU: 0.0002
   beta1: 0.5
-  epoch: 5
-  bs: 512
+  # === Epochs ===
+  epoch: 10
+  # === Batch ===
+  bs: 8                 # 兜底/回退用（仍保留）
+  bs_ladder: [32, 40, 48]   # ★ 新增：批量阶梯（训练中逐档提升）
+  # === Loss weights ===
+  lambda_mmd: 0.3
+  lambda_diff: 1.0
+  # === Diffusion (inference-time knobs; 保留) ===
+  ddim_steps: 15
+  use_guidance: false
+  guidance_scale: 0.3
+  # === WGAN 部分（保留） ===
   wgan:
     feat_match_eff: 1
-    match_item: {'mu': 1}  # 'mu': 1, 'sigma': 1
+    match_item: {'mu': 1}
     ncritic: 1
-    lambda_gp: 10  # for gradient penalty
+    lambda_gp: 10
+  # === 训练管理 ===
+  patience: 2            # 建议>0，没提升若连续2次评估则早停
+  save_every: 1          # 每 N 个 epoch 额外保存一次 last（按 epoch）
+  save_every_steps: 5000 # ★ 新增：每 N 步保存一次 last（按步，强烈推荐）
+  # === 恢复/微调相关（可选）===
+  ft_lr_scale: 1.0       # 仅 --resume 时在 main() 中生效；命令行可覆盖
+  use_amp: false         # 可选：若代码里支持 AMP，就改为 true
+
+
+model:
+  D_cond_levels: [2,3,4]  # 取D的第2/3/4层
+  D_cond_ch_total: 96     # 条件通道总数，按你降维后的拼接来
+  beta_schedule: linear
+  t_emb_dim: 128
+  T_diffusion: 1000
 
 detect:
   p: 0.1

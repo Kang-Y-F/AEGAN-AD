@@ -1,0 +1,7 @@
+{
+  "epoch": 9,
+  "step_in_epoch": 11873,
+  "global_step": 150000,
+  "bs": 48,
+  "last_ckpt": "./model/fan_last.pth"
+}
