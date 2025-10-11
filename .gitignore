@@ -131,3 +131,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.bin
+*.safetensors
